@@ -1,4 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 export default defineConfig({
   testDir: './tests',
@@ -7,17 +10,9 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
 
-  // Ensure 'html' is present so playwright-report/ is always generated
   reporter: [
     ['html', { open: 'never' }],
-    [
-      'playwright-slack-report',
-      {
-        channels: ['qa-reports'],
-        sendResults: 'always',
-        showFailureWithSelection: ['issue', 'message', 'stack'],
-      },
-    ],
+    ['./slack-reporter.ts'],
   ],
 
   use: {
