@@ -32,11 +32,10 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           CI: 'true'
-          SLACK_BOT_USER_OAUTH_TOKEN: '' # Not needed if using webhook mode
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           TRIGGERED_BY: ${{ github.actor }}
           BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: npx playwright test
+        run: npx --no-install playwright test
 
       - name: Upload HTML Test Report Artifact
         if: ${{ !cancelled() }}
