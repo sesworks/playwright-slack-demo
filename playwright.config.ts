@@ -3,27 +3,19 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   fullyParallel: true,
+  forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  
-  // Reporter Configuration
+  workers: process.env.CI ? 1 : undefined,
+
+  // Ensure 'html' is present so playwright-report/ is always generated
   reporter: [
     ['html', { open: 'never' }],
     [
       'playwright-slack-report',
       {
-        channels: ['qa-reports'], // Your Slack channel name
-        sendResults: 'always',    // Options: 'always' | 'on-failure' | 'off'
+        channels: ['qa-reports'],
+        sendResults: 'always',
         showFailureWithSelection: ['issue', 'message', 'stack'],
-        meta: [
-          {
-            key: 'Triggered By',
-            value: process.env.TRIGGERED_BY || 'Local Run',
-          },
-          {
-            key: 'Build Link',
-            value: process.env.BUILD_URL || 'N/A',
-          },
-        ],
       },
     ],
   ],
