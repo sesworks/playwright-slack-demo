@@ -73,7 +73,9 @@ jobs:
           # Sets execution environment dynamically (defaults to 'production')
           NODE_ENV: ${{ github.event.client_payload.environment || 'staging' }}
           TEST_ENV: ${{ github.event.client_payload.environment || 'staging' }}
-        run: npx playwright test
+          
+        # Passing --project ensures Playwright populates test.projectName accurately 
+        run: npx playwright test --project=api --project=e2e
 
       # Step 6: Upload Playwright HTML report & trace artifacts upon failure or pass
       - name: Upload Test Report & Trace Artifacts

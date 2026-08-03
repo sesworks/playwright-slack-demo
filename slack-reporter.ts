@@ -89,7 +89,9 @@ class SlackReporter implements Reporter {
 
     if (test.projectName) {
       this.activeProject = test.projectName.toUpperCase();
-    }
+    } else {
+    this.activeProject = isApiFile ? 'API' : 'E2E';
+  }
 
     // Determine if this attempt is the final attempt Playwright will make
     const isLastAttempt = test.results[test.results.length - 1] === result;
@@ -150,21 +152,31 @@ class SlackReporter implements Reporter {
     // Helper text for test count breakdown (e.g., "Passed: 3 | Failed: 1 | Flaky: 0 | Total: 4")
     const summaryMarkdown = `*Passed:* \`${this.passedCount}\`  |  *Failed:* \`${failedCount}\`  |  *Flaky:* \`${flakyCount}\`  |  *Total:* \`${totalTests}\``;
 
-    // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
     // CASE 1: ALL TESTS PASSED (Green Success Notification)
     // --------------------------------------------------------------------------
     if (failedCount === 0 && flakyCount === 0) {
       console.log('🎉 [SlackReporter] Suite passed! Dispatching success summary to Slack...');
+      
+      const isApiRun = this.activeProject === 'API';
+      const passHeaderTitle = isApiRun 
+        ? '✅ API Integration Test Passed' 
+        : '✅ E2E Test Suite Execution Passed';
+
+      const qualityGateText = isApiRun
+        ? '⚡ *Quality Gate:* All endpoints returned expected HTTP responses with 0 regressions.'
+        : '⚡ *Quality Gate:* All UI workflows completed successfully with 0 visual regressions.';
+
       try {
         await slack.chat.postMessage({
           channel: channelId,
-          text: `✅ All Tests Passed (${this.passedCount}/${totalTests})`, // Fallback mobile push text
+          text: `✅ All Tests Passed (${this.passedCount}/${totalTests})`,
           blocks: [
             {
               type: 'header',
               text: {
                 type: 'plain_text',
-                text: '✅ Test Suite Execution Passed',
+                text: passHeaderTitle,
                 emoji: true,
               },
             },
@@ -201,7 +213,7 @@ class SlackReporter implements Reporter {
               elements: [
                 {
                   type: 'mrkdwn',
-                  text: '⚡ *Quality Gate:* All endpoints returned expected HTTP responses with 0 regressions.',
+                  text: qualityGateText,
                 },
               ],
             },
