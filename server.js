@@ -1,33 +1,40 @@
-const express = require('express');
+const { App } = require('@slack/bolt');
 const { exec } = require('child_process');
 
-const app = express();
-app.use(express.urlencoded({ extended: true })); // Slack sends slash command data as URL-encoded
+// Initialize Bolt App with Socket Mode
+const app = new App({
+  token: process.env.SLACK_BOT_TOKEN, // Starts with xoxb-
+  appToken: process.env.SLACK_APP_TOKEN, // Starts with xapp-
+  socketMode: true,
+});
 
-// Endpoint for Slack Slash Command /test-smoke
-app.post('/slack/command', (req, res) => {
-  const { command, text, user_name } = req.body;
-  const environment = text.trim() || 'staging';
+// Listen for the /test-smoke Slash Command
+app.command('/test-smoke', async ({ command, ack, respond }) => {
+  // Acknowledge the command request immediately within 3 seconds
+  await ack();
 
-  console.log(`📩 Received Slack Command '${command} ${environment}' from @${user_name}`);
+  const environment = command.text.trim() || 'staging';
+  const userName = command.user_name;
 
-  // Immediately reply to Slack so the command doesn't time out (3-second limit)
-  res.json({
-    response_type: 'in_channel', // Visible to everyone in the channel
-    text: `🚀 *@${user_name}* triggered Playwright E2E Smoke Tests on *[${environment}]*! The pipeline is executing in GitHub Actions...`,
+  console.log(`📩 Received Slack Command '/test-smoke ${environment}' from @${userName}`);
+
+  // Send immediate feedback in Slack channel
+  await respond({
+    response_type: 'in_channel',
+    text: `🚀 *@${userName}* triggered Playwright E2E Smoke Tests on *[${environment}]*! Executing GitHub Actions pipeline...`,
   });
 
-  // Trigger GitHub Actions via script
+  // Execute trigger-tests.js
   exec(`node trigger-tests.js ${environment}`, (error, stdout, stderr) => {
     if (error) {
-      console.error(`Error triggering test: ${error.message}`);
+      console.error(`❌ Error triggering test: ${error.message}`);
       return;
     }
     console.log(stdout);
   });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`⚡ Slack Slash Command listener running on port ${PORT}`);
-});
+(async () => {
+  await app.start();
+  console.log('⚡ Playwright Slack Bot is running in Socket Mode!');
+})();

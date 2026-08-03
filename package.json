@@ -17,6 +17,7 @@
     "playwright-slack-report": "^1.1.112"
   },
   "dependencies": {
+    "@slack/bolt": "^5.0.0",
     "express": "^5.2.1"
   }
 }
