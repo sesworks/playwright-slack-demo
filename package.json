@@ -17,7 +17,9 @@
     "playwright-slack-report": "^1.1.112"
   },
   "dependencies": {
+    "@google/genai": "^2.15.0",
     "@slack/bolt": "^5.0.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "sharp": "^0.35.3"
   }
 }

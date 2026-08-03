@@ -1,105 +1,150 @@
-// Import Playwright Reporter interfaces and result types
-import { Reporter, FullResult, TestCase, TestResult } from '@playwright/test';
+// ============================================================================
+// IMPORTS
+// ============================================================================
+// Import Playwright core types for custom reporter implementations
+import { Reporter, FullResult } from '@playwright/test/reporter';
 
-// Structure for storing flaky test tracking details
-interface FlakyTestInfo {
-  title: string;
-  retriesTaken: number;
-}
+// Import official Slack Web API Client SDK to post Slack Block Kit messages
+import { WebClient } from '@slack/web-api';
 
+// Import custom AI diff analyzer script that communicates with Google Gemini API
+import { analyzeVisualDiff } from './scripts/ai-diff-analyzer';
+
+// Import Node.js built-in module for file system operations (checking file existence)
+import fs from 'fs';
+
+// Import Node.js built-in module for cross-platform file path resolution (Windows/Linux/macOS)
+import path from 'path';
+
+/**
+ * Custom Playwright Reporter for ChatOps & AI-Powered Visual Regression Triage.
+ * 
+ * Playwright automatically instantiated classes implementing `Reporter` and executes
+ * lifecycle hooks (such as `onEnd`) at specified execution milestones.
+ */
 class SlackReporter implements Reporter {
-  // Lists for collecting failed and flaky tests
-  private failedTests: { title: string; error?: string }[] = [];
-  private flakyTests: FlakyTestInfo[] = [];
 
-  // Metrics counters
-  private passedFirstTryCount = 0;
-  private failedCount = 0;
-
-  // Lifecycle Method: Listens to every test and retry attempt
-  onTestEnd(test: TestCase, result: TestResult) {
-    const isFinalAttempt = result.retry === test.retries;
-
-    if (result.status === 'passed') {
-      if (result.retry === 0) {
-        // Passed cleanly on the first try
-        this.passedFirstTryCount++;
-      } else {
-        // Passed after 1 or 2 retries -> FLAKY DETECTED!
-        this.flakyTests.push({
-          title: test.title,
-          retriesTaken: result.retry,
-        });
-      }
-    } else if ((result.status === 'failed' || result.status === 'timedOut') && isFinalAttempt) {
-      // Failed every retry attempt -> Real Failure
-      this.failedCount++;
-
-      const cleanError = result.error?.message
-        ? result.error.message.replace(/\u001b\[\d+m/g, '')
-        : 'Unknown execution error';
-
-      this.failedTests.push({
-        title: test.title,
-        error: cleanError.split('\n')[0],
-      });
-    }
-  }
-
-  // Lifecycle Method: Executes after the suite completes
+  /**
+   * Playwright lifecycle hook triggered automatically after all tests complete execution.
+   * 
+   * @param result - FullResult object containing overall run statistics, status codes, and execution timing.
+   */
   async onEnd(result: FullResult) {
-    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+    // --------------------------------------------------------------------------
+    // STEP 1: LOAD & VALIDATE ENVIRONMENT VARIABLES
+    // --------------------------------------------------------------------------
+    // Retrieve the Slack Bot OAuth Token (must start with xoxb-)
+    const slackToken = process.env.SLACK_BOT_TOKEN;
 
-    if (!webhookUrl) {
-      console.log('⚠️ SLACK_WEBHOOK_URL is missing. Skipping Slack notification.');
+    // Retrieve the target Slack Channel ID where reports will be delivered (e.g., C08ABC12345)
+    const channelId = process.env.SLACK_CHANNEL_ID;
+
+    // Guard Clause: Gracefully abort notification dispatch if authentication credentials are omitted
+    if (!slackToken || !channelId) {
+      console.log('⚠️ [SlackReporter] Missing SLACK_BOT_TOKEN or SLACK_CHANNEL_ID environment variables. Skipping notification dispatch.');
       return;
     }
 
-    const isSuccess = result.status === 'passed';
-    const statusHeader = isSuccess ? 'PASSED ✅' : 'FAILED ❌';
+    // Initialize the Slack WebClient instance with the authenticated Bot Token
+    const slack = new WebClient(slackToken);
 
-    // Build the high-level summary header
-    let messageText = `*Playwright E2E Quality Health Report*\n`;
-    messageText += `*Status:* ${statusHeader}\n`;
-    messageText += `*Metrics:* ${this.passedFirstTryCount} Solid Passed | ${this.flakyTests.length} Flaky ⚠️ | ${this.failedCount} Failed\n`;
-    messageText += `*Duration:* ${(result.duration / 1000).toFixed(2)}s | *Env:* ${process.env.CI ? 'CI/CD Pipeline' : 'Local Run'}`;
+    // --------------------------------------------------------------------------
+    // STEP 2: DETECT TEST SUITE FAILURES
+    // --------------------------------------------------------------------------
+    // Proceed with AI analysis and Slack alert ONLY if the test run status is 'failed'
+    if (result.status === 'failed') {
+      try {
+        console.log('🤖 [SlackReporter] Suite failure detected. Initiating AI Visual Diff Analysis workflow...');
 
-    // Section 1: Flaky Tests Warning (if any exist)
-    if (this.flakyTests.length > 0) {
-      const flakyList = this.flakyTests
-        .map((f) => `• *${f.title}* _(Passed on retry #${f.retriesTaken})_`)
-        .join('\n');
+        // ----------------------------------------------------------------------
+        // STEP 3: RESOLVE VISUAL ARTIFACT PATHS (BASELINE VS ACTUAL)
+        // ----------------------------------------------------------------------
+        // Construct the absolute path to the expected baseline snapshot stored in source control
+        const baselinePath = path.join(process.cwd(), 'tests', 'visual.spec.ts-snapshots', 'homepage-baseline-chromium-win32.png');
 
-      messageText += `\n\n⚠️ *Flaky Tests Detected (${this.flakyTests.length}):*\n${flakyList}`;
-    }
+        // Construct path to the root `test-results` folder where Playwright outputs runtime test artifacts
+        const testResultsDir = path.join(process.cwd(), 'test-results');
+        let actualPath = '';
 
-    // Section 2: Hard Failure Details (if any exist)
-    if (this.failedTests.length > 0) {
-      const failureList = this.failedTests
-        .map((f) => `• *${f.title}*\n  \`${f.error}\``)
-        .join('\n');
+        // Dynamically locate the generated actual failure screenshot inside generated test subdirectories
+        if (fs.existsSync(testResultsDir)) {
+          const subdirs = fs.readdirSync(testResultsDir);
+          for (const dir of subdirs) {
+            // Check if this subdirectory contains the failure actual screenshot generated by Playwright
+            const potentialFile = path.join(testResultsDir, dir, 'homepage-baseline-actual.png');
+            if (fs.existsSync(potentialFile)) {
+              actualPath = potentialFile;
+              break; // Stop searching once the actual failure snapshot is found
+            }
+          }
+        }
 
-      messageText += `\n\n❌ *Failed Details (${this.failedTests.length}):*\n${failureList}`;
-    }
+        // ----------------------------------------------------------------------
+        // STEP 4: VERIFY FILE SYSTEM ARTIFACTS BEFORE AI CALL
+        // ----------------------------------------------------------------------
+        // Ensure baseline image file exists on disk
+        if (!fs.existsSync(baselinePath)) {
+          console.error(`❌ [SlackReporter] Baseline image not found on disk at: ${baselinePath}`);
+          return;
+        }
 
-    const payload = { text: messageText };
+        // Ensure actual failure image file exists on disk
+        if (!actualPath || !fs.existsSync(actualPath)) {
+          console.error(`❌ [SlackReporter] Actual failure image not found inside test-results directory.`);
+          return;
+        }
 
-    try {
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+        console.log('📸 [SlackReporter] Successfully located baseline and actual screenshots! Invoking Gemini Vision API...');
 
-      if (response.ok) {
-        console.log('🔔 Quality Health Slack notification sent successfully!');
-      } else {
-        console.error('❌ Failed to send Slack notification:', response.statusText);
+        // ----------------------------------------------------------------------
+        // STEP 5: GENERATE AI DIFF SUMMARY & DISPATCH SLACK BLOCK CARD
+        // ----------------------------------------------------------------------
+        // Call the Gemini Multimodal AI script, passing both screenshot paths for visual comparison
+        const aiSummary = await analyzeVisualDiff(baselinePath, actualPath);
+
+        // Send a structured Slack Block Kit message payload to the configured channel
+        await slack.chat.postMessage({
+          channel: channelId,
+          text: '🎨 Visual Regression Failure Detected', // Fallback text for mobile push notifications
+          blocks: [
+            {
+              type: 'header',
+              text: {
+                type: 'plain_text',
+                text: '🎨 Visual Regression Failure Detected',
+                emoji: true,
+              },
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `*Status:* ❌ Failed Baseline Snapshot Comparison\n*Environment:* \`staging\``,
+              },
+            },
+            {
+              type: 'divider',
+            },
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `🤖 *AI Visual Diff Summary:*\n${aiSummary}`,
+              },
+            },
+          ],
+        });
+
+        console.log('✅ [SlackReporter] Successfully delivered AI Visual Diff Card to Slack!');
+      } catch (error: any) {
+        // Catch and log API transmission or filesystem execution errors gracefully
+        console.error('❌ [SlackReporter] Failed to complete notification workflow:', error.message);
       }
-    } catch (error) {
-      console.error('❌ Error sending to Slack:', error);
+    } else {
+      console.log('🎉 [SlackReporter] Test suite passed successfully. No visual regressions detected.');
     }
   }
 }
 
+// Export the SlackReporter class as default for Playwright test configuration consumption
 export default SlackReporter;
