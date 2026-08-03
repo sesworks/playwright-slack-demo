@@ -78,8 +78,15 @@ class SlackReporter implements Reporter {
   /**
    * PLAYWRIGHT HOOK: Triggered after each test attempt completes.
    */
-  onTestEnd(test: TestCase, result: TestResult) {
-    // Record active project name from incoming tests
+ onTestEnd(test: TestCase, result: TestResult) {
+    // Determine if file path is in the 'api' directory
+    const isApiFile = test.location.file.includes('tests/api') || test.location.file.includes('tests\\api');
+    
+    // Resolve project accurately: use test.projectName, or derive from file path
+    const resolvedProject = test.projectName 
+      ? test.projectName.toUpperCase() 
+      : (isApiFile ? 'API' : 'E2E');
+
     if (test.projectName) {
       this.activeProject = test.projectName.toUpperCase();
     }
@@ -87,33 +94,31 @@ class SlackReporter implements Reporter {
     // Determine if this attempt is the final attempt Playwright will make
     const isLastAttempt = test.results[test.results.length - 1] === result;
 
-    if (result.status === 'passed') {
+   if (result.status === 'passed') {
       if (test.results.length > 1) {
         // Test failed earlier but passed on retry -> FLAKY ONLY
         const firstFailure = test.results.find(r => r.status === 'failed' || r.status === 'timedOut');
         
         this.flakyTests.push({
           title: test.title,
-          // Ensure we fallback to active project or 'E2E'
-          project: test.projectName || this.activeProject, 
+          project: resolvedProject, 
           error: firstFailure?.error?.message || 'Transient failure resolved on retry.',
           retryCount: test.results.length - 1,
         });
 
-        // CRITICAL FIX: If Attempt #1 added this test to failedTests, remove it!
+        // Remove from failedTests if earlier attempt added it
         this.failedTests = this.failedTests.filter(f => f.title !== test.title);
       } else {
-        // Passed on Attempt #1 -> CLEAN PASS
+        // Clean Pass
         this.passedCount++;
       }
     } else if ((result.status === 'failed' || result.status === 'timedOut') && isLastAttempt) {
-      // ONLY record as a hard failure if the FINAL attempt failed and it NEVER passed
       const hasAnyPass = test.results.some(r => r.status === 'passed');
       
       if (!hasAnyPass) {
         this.failedTests.push({
           title: test.title,
-          project: test.projectName || this.activeProject,
+          project: resolvedProject,
           error: result.error?.message || 'No explicit error message provided.',
           retryCount: result.retry,
         });
