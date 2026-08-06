@@ -96,10 +96,10 @@ test.describe('API & Integration Layer - Sales Deals API', () => {
     });
 
     // 2. Assert HTTP Status Code (200 OK)
-    // expect(response.status()).toBe(200);
+    expect(response.status()).toBe(200);
 
     // Change this temporarily:
-expect(response.status()).toBe(500);
+// expect(response.status()).toBe(500);
 
     // 3. Validate updated values in the response object
     const updatedDeal = await response.json();

@@ -15,6 +15,13 @@ export default defineConfig({
   testDir: './tests',
 
   /**
+   * Ignore specific demo spec files in CI environments while keeping them local.
+   */
+  testIgnore: process.env.CI
+    ? ['**/failing-demo.spec.ts', '**/flaky-demo.spec.ts']
+    : [],
+
+  /**
    * Run all tests in parallel across files for maximum execution speed.
    */
   fullyParallel: true,
