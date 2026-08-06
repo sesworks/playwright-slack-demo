@@ -46,11 +46,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 2: Set up Node.js runtime environment using LTS version
+      # Step 2: Set up Node.js runtime environment (Explicitly targeting Node.js 22 to prevent runner deprecation warnings)
       - name: Setup Node.js Environment
         uses: actions/setup-node@v4
         with:
-          node-version: lts/*
+          node-version: 22
           cache: 'npm' # Caches npm packages to speed up pipeline execution
 
       # Step 3: Clean install project npm dependencies
@@ -70,7 +70,7 @@ jobs:
           # Injects target Slack Channel ID where alerts and summaries are posted
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
           
-          # Sets execution environment dynamically (defaults to 'production')
+          # Sets execution environment dynamically (defaults to 'staging')
           NODE_ENV: ${{ github.event.client_payload.environment || 'staging' }}
           TEST_ENV: ${{ github.event.client_payload.environment || 'staging' }}
           
