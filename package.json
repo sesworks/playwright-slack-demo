@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "upload": "node upload-allure.js",
+    "test:report": "run-s -c test upload"
   },
   "keywords": [],
   "author": "",
@@ -13,7 +15,9 @@
     "@playwright/test": "^1.62.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.2",
+    "allure-playwright": "^3.10.2",
     "dotenv": "^17.4.2",
+    "npm-run-all": "^4.1.5",
     "playwright-slack-report": "^1.1.112",
     "zod": "^4.4.3"
   },

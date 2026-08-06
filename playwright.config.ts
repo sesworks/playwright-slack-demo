@@ -15,11 +15,10 @@ export default defineConfig({
   testDir: './tests',
 
   /**
-   * Ignore specific demo spec files in CI environments while keeping them local.
+   * Ignore specific demo spec files in all environments (local and CI)
+   * so they don't trigger Slack alerts or fail test executions.
    */
-  testIgnore: process.env.CI
-    ? ['**/failing-demo.spec.ts', '**/flaky-demo.spec.ts']
-    : [],
+  testIgnore: ['**/failing-demo.spec.ts', '**/flaky-demo.spec.ts'],
 
   /**
    * Run all tests in parallel across files for maximum execution speed.
@@ -47,10 +46,12 @@ export default defineConfig({
    * Reporter configuration for test outcome publishing:
    * 1. Built-in HTML Reporter: Generates offline dashboard (suppressed auto-open).
    * 2. Custom Slack Reporter: Intercepts failures and posts AI-analyzed cards to Slack.
+   * 3. Allure Playwright Reporter: Exports test execution metadata to `allure-results/` for Docker dashboard.
    */
   reporter: [
     ['html', { open: 'never' }],
     ['./slack-reporter.ts'],
+    ['allure-playwright', { resultsDir: 'allure-results' }],
   ],
 
   /**
