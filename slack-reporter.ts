@@ -1,36 +1,19 @@
 // ============================================================================
 // IMPORTS
 // ============================================================================
-// Import Playwright core types for building custom test reporters
 import { Reporter, TestCase, TestResult, FullResult } from '@playwright/test/reporter';
-
-// Import official Slack Web API Client SDK to send Block Kit messages
 import { WebClient } from '@slack/web-api';
-
-// Import custom AI diff analyzer script that sends baseline/actual screenshots to Google Gemini Vision API
 import { analyzeVisualDiff } from './scripts/ai-diff-analyzer';
-
-// Node.js file system module to check if local snapshot files exist on disk
 import fs from 'fs';
-
-// Node.js path module for cross-platform file path resolution (Windows/Linux/macOS)
 import path from 'path';
 
 // ============================================================================
 // HELPER UTILITIES
 // ============================================================================
-
-/**
- * Strips ANSI terminal color escape sequences (e.g., [31m, [32m) from Playwright error logs
- * so trace stacks render as clean, readable plain text inside Slack code blocks.
- */
 function stripAnsiCodes(text: string): string {
   return text.replace(/\u001b\[[0-9;]*m/g, '');
 }
 
-/**
- * Formats duration from milliseconds into a human-readable seconds format.
- */
 function formatDuration(ms: number): string {
   const seconds = (ms / 1000).toFixed(2);
   return `${seconds}s`;
@@ -39,66 +22,45 @@ function formatDuration(ms: number): string {
 // ============================================================================
 // TYPES & INTERFACES
 // ============================================================================
-
-/**
- * Data structure used to collect failed or flaky test metrics across different projects.
- */
 interface TestIssue {
-  title: string;       // Name / Title of the spec (e.g., "GET /posts - Should retrieve deals")
-  project: string;     // Playwright project name ('api' vs 'e2e')
-  error?: string;      // Extracted error stack trace or failure cause
-  retryCount: number;  // Number of retries executed before final outcome
+  title: string;
+  project: string;
+  error?: string;
+  retryCount: number;
 }
 
 // ============================================================================
 // MAIN REPORTER CLASS
 // ============================================================================
-
-/**
- * Custom Playwright Reporter for ChatOps & Automated Failure Triage.
- * 
- * Automatically captures test execution status and dispatches structured Slack Block Kit
- * notifications displaying passed vs failed test breakdowns, flaky test flags, and AI visual diffs.
- */
 class SlackReporter implements Reporter {
   private failedTests: TestIssue[] = [];
   private flakyTests: TestIssue[] = [];
   private passedCount = 0;
+  
+  // Per-project counters
+  private apiPassedCount = 0;
+  private e2ePassedCount = 0;
+  
   private startTime = 0;
-  private activeProject = 'E2E'; // Default fallback project name
+  private projectsRun = new Set<string>();
 
-  /**
-   * PLAYWRIGHT HOOK: Triggered once when the test suite starts.
-   * Records initial timestamp to calculate total execution duration.
-   */
   onBegin() {
     this.startTime = Date.now();
   }
 
-  /**
-   * PLAYWRIGHT HOOK: Triggered after each test attempt completes.
-   */
- onTestEnd(test: TestCase, result: TestResult) {
-    // Determine if file path is in the 'api' directory
+  onTestEnd(test: TestCase, result: TestResult) {
     const isApiFile = test.location.file.includes('tests/api') || test.location.file.includes('tests\\api');
     
-    // Resolve project accurately: use test.projectName, or derive from file path
     const resolvedProject = test.projectName 
       ? test.projectName.toUpperCase() 
       : (isApiFile ? 'API' : 'E2E');
 
-    if (test.projectName) {
-      this.activeProject = test.projectName.toUpperCase();
-    } else {
-    this.activeProject = isApiFile ? 'API' : 'E2E';
-  }
+    this.projectsRun.add(resolvedProject);
 
-    // Determine if this attempt is the final attempt Playwright will make
     const isLastAttempt = test.results[test.results.length - 1] === result;
 
-   if (result.status === 'passed') {
+    if (result.status === 'passed') {
       if (test.results.length > 1) {
-        // Test failed earlier but passed on retry -> FLAKY ONLY
         const firstFailure = test.results.find(r => r.status === 'failed' || r.status === 'timedOut');
         
         this.flakyTests.push({
@@ -108,11 +70,17 @@ class SlackReporter implements Reporter {
           retryCount: test.results.length - 1,
         });
 
-        // Remove from failedTests if earlier attempt added it
         this.failedTests = this.failedTests.filter(f => f.title !== test.title);
       } else {
         // Clean Pass
         this.passedCount++;
+        
+        // Track per-project passes
+        if (resolvedProject === 'API') {
+          this.apiPassedCount++;
+        } else {
+          this.e2ePassedCount++;
+        }
       }
     } else if ((result.status === 'failed' || result.status === 'timedOut') && isLastAttempt) {
       const hasAnyPass = test.results.some(r => r.status === 'passed');
@@ -128,13 +96,7 @@ class SlackReporter implements Reporter {
     }
   }
 
-  /**
-   * PLAYWRIGHT HOOK: Triggered after all test projects complete execution.
-   */
   async onEnd(result: FullResult) {
-    // --------------------------------------------------------------------------
-    // STEP 1: AUTHENTICATION & CREDENTIAL CHECK
-    // --------------------------------------------------------------------------
     const slackToken = process.env.SLACK_BOT_TOKEN;
     const channelId = process.env.SLACK_CHANNEL_ID;
 
@@ -149,23 +111,36 @@ class SlackReporter implements Reporter {
     const flakyCount = this.flakyTests.length;
     const totalTests = this.passedCount + failedCount + flakyCount;
 
-    // Helper text for test count breakdown (e.g., "Passed: 3 | Failed: 1 | Flaky: 0 | Total: 4")
+    const projectsArray = Array.from(this.projectsRun);
+    const formattedProjects = projectsArray.length > 0 ? projectsArray.join(', ') : 'E2E';
+
+    // Build project breakdown string (e.g. "API: 3 passed | E2E: 11 passed")
+    const projectBreakdown = `• *API:* \`${this.apiPassedCount}\` passed\n• *E2E:* \`${this.e2ePassedCount}\` passed`;
+
     const summaryMarkdown = `*Passed:* \`${this.passedCount}\`  |  *Failed:* \`${failedCount}\`  |  *Flaky:* \`${flakyCount}\`  |  *Total:* \`${totalTests}\``;
 
-// --------------------------------------------------------------------------
-    // CASE 1: ALL TESTS PASSED (Green Success Notification)
+    // --------------------------------------------------------------------------
+    // CASE 1: ALL TESTS PASSED
     // --------------------------------------------------------------------------
     if (failedCount === 0 && flakyCount === 0) {
       console.log('🎉 [SlackReporter] Suite passed! Dispatching success summary to Slack...');
       
-      const isApiRun = this.activeProject === 'API';
-      const passHeaderTitle = isApiRun 
-        ? '✅ API Integration Test Passed' 
-        : '✅ E2E Test Suite Execution Passed';
+      const hasApi = this.projectsRun.has('API');
+      const hasE2e = this.projectsRun.has('E2E');
 
-      const qualityGateText = isApiRun
-        ? '⚡ *Quality Gate:* All endpoints returned expected HTTP responses with 0 regressions.'
-        : '⚡ *Quality Gate:* All UI workflows completed successfully with 0 visual regressions.';
+      let passHeaderTitle = '✅ Test Suite Execution Passed';
+      let qualityGateText = '⚡ *Quality Gate:* All workflows passed with 0 regressions.';
+
+      if (hasApi && hasE2e) {
+        passHeaderTitle = '✅ Full-Stack Test Suite Execution Passed';
+        qualityGateText = '⚡ *Quality Gate:* All API contracts verified & UI workflows completed with 0 visual regressions.';
+      } else if (hasApi) {
+        passHeaderTitle = '✅ API Integration Test Passed';
+        qualityGateText = '⚡ *Quality Gate:* All endpoints returned expected HTTP responses with 0 regressions.';
+      } else if (hasE2e) {
+        passHeaderTitle = '✅ E2E Test Suite Execution Passed';
+        qualityGateText = '⚡ *Quality Gate:* All UI workflows completed successfully with 0 visual regressions.';
+      }
 
       try {
         await slack.chat.postMessage({
@@ -184,7 +159,7 @@ class SlackReporter implements Reporter {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: `📊 *Execution Summary:*\n${summaryMarkdown}`,
+                text: `📊 *Execution Summary:*\n${summaryMarkdown}\n\n*Project Breakdown:*\n${projectBreakdown}`,
               },
             },
             {
@@ -192,7 +167,7 @@ class SlackReporter implements Reporter {
               fields: [
                 {
                   type: 'mrkdwn',
-                  text: `*Project:* \`${this.activeProject}\``,
+                  text: `*Project(s):* \`${formattedProjects}\``,
                 },
                 {
                   type: 'mrkdwn',
@@ -230,7 +205,7 @@ class SlackReporter implements Reporter {
     }
 
     // --------------------------------------------------------------------------
-    // CASE 2: FLAKY TESTS DETECTED (Self-Healed Alerts)
+    // CASE 2: FLAKY TESTS DETECTED
     // --------------------------------------------------------------------------
     if (flakyCount > 0) {
       console.log(`⚠️ [SlackReporter] Detected ${flakyCount} flaky test(s). Dispatching alerts...`);
@@ -260,7 +235,7 @@ class SlackReporter implements Reporter {
                 fields: [
                   {
                     type: 'mrkdwn',
-                    text: `*Project:* \`${(flake.project || this.activeProject).toUpperCase()}\``,
+                    text: `*Project:* \`${flake.project.toUpperCase()}\``,
                   },
                   {
                     type: 'mrkdwn',
@@ -294,22 +269,19 @@ class SlackReporter implements Reporter {
     }
 
     // --------------------------------------------------------------------------
-    // CASE 3: HARD FAILURES (API & E2E)
+    // CASE 3: HARD FAILURES
     // --------------------------------------------------------------------------
     if (failedCount > 0) {
       console.log(`🤖 [SlackReporter] Dispatching ${failedCount} hard failure report(s)...`);
 
       for (const failure of this.failedTests) {
         try {
-          const isApiTest = failure.project === 'api' || 
+          const isApiTest = failure.project === 'API' || 
                             failure.title.includes('GET') || 
                             failure.title.includes('POST') || 
                             failure.title.includes('PUT') || 
                             failure.title.includes('DELETE');
 
-          // --------------------------------------------------------------------
-          // BRANCH 3A: HANDLE API / INTEGRATION TEST FAILURES
-          // --------------------------------------------------------------------
           if (isApiTest) {
             await slack.chat.postMessage({
               channel: channelId,
@@ -335,7 +307,7 @@ class SlackReporter implements Reporter {
                   fields: [
                     {
                       type: 'mrkdwn',
-                      text: `*Project:* \`${(failure.project || 'API').toUpperCase()}\``,
+                      text: `*Project:* \`${failure.project.toUpperCase()}\``,
                     },
                     {
                       type: 'mrkdwn',
@@ -363,11 +335,7 @@ class SlackReporter implements Reporter {
               ],
             });
             console.log('✅ [SlackReporter] Successfully delivered API failure alert to Slack!');
-          } 
-          // --------------------------------------------------------------------
-          // BRANCH 3B: HANDLE UI & VISUAL REGRESSION FAILURES (AI TRIASED WITH FALLBACK)
-          // --------------------------------------------------------------------
-          else {
+          } else {
             const baselinePath = path.join(process.cwd(), 'tests', 'visual.spec.ts-snapshots', 'homepage-baseline-chromium-win32.png');
             const testResultsDir = path.join(process.cwd(), 'test-results');
             let actualPath = '';
@@ -420,7 +388,7 @@ class SlackReporter implements Reporter {
                   fields: [
                     {
                       type: 'mrkdwn',
-                      text: `*Project:* \`${(failure.project || this.activeProject).toUpperCase()}\``,
+                      text: `*Project:* \`${failure.project.toUpperCase()}\``,
                     },
                     {
                       type: 'mrkdwn',
