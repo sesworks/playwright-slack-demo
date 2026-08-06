@@ -75,7 +75,8 @@ jobs:
           TEST_ENV: ${{ github.event.client_payload.environment || 'staging' }}
           
         # Passing --project ensures Playwright populates test.projectName accurately 
-        run: npx playwright test --project=api --project=e2e
+        # Added --update-snapshots to auto-generate baseline images in Linux CI
+        run: npx playwright test --project=api --project=e2e --update-snapshots
 
       # Step 6: Upload Playwright HTML report & trace artifacts upon failure or pass
       - name: Upload Test Report & Trace Artifacts
